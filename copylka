@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+#===============================================================================
+#
+#          FILE: copylka
+# 
+#         USAGE: copylka [options] [file_list.fl] [source file] destination[.dl]:[path]
+# 
+#   DESCRIPTION: Upload file(s) to remote host(s) (using rsync) and execute a command (using ssh).
+# 
+#       OPTIONS: ---
+#  REQUIREMENTS: rsync, openssh
+#          BUGS: ---
+#         NOTES: ---
+#        AUTHOR: Albert Mikaelyan 
+#  ORGANIZATION: 
+#       CREATED: 04/01/2015 10:55
+#      REVISION:  ---
+#===============================================================================
+
+# Set global variables
+destList=
+defaultPath="/tmp/"
+defaultPort=
+defaultRsyncOptions="-avzh"
+
+
+show_help()
+{
+	cat <<-HELP
+
+	Usage: copylka [options] [file_list.fl] [source file] destination[.dl]:[path]
+	
+	Upload file(s) to remote host(s) (using rsync) and execute a command (using ssh).
+
+	Mandatory arguments to long options are mandatory for short options too.
+	-h, --help		       Show this help
+	-e, --exec             Command to execute on remote host
+	-p, --port             Default port number for connecting to host
+	-r, --rsync-options    Default rsync options for uploading files
+
+	examples:
+
+	copylka -e "rm -rf /tmp/*" hostname
+		Will execute the command "rm -rf /tmp/*" on hostname.
+
+	copylka file_name hostname
+		Will upload a file "file_name" to hostname.
+
+	copylka -p 2222 folder_name dest.dl:/root/
+		Will upload folder 'folder_name' to destination list in 'dest.dl' with default port '2222' and default path '/root' (see README for better explanation).
+
+	HELP
+
+	if [[ -n "$2" ]]; then
+		echo "$2" >&2
+		exit "$1"
+	else
+		exit "$1"
+	fi
+}
+
+
+# Check destination, and assign to destList
+check_dest()
+{	
+	if [[ "$1" == *:* ]]; then
+		defaultPath="${1#*:}"
+		destName="${1%:*}"
+	else
+		destName="$1"
+	fi
+
+	if [[ "$destName" == *.dl ]]; then
+		destList="$destName"
+	elif [[ "$destName" == *@* ]]; then
+		destList="$destName"
+	else
+		destList="@$destName"
+	fi
+}
+
+loop_dest() {
+	# Check if destination list is a file or a string, and create &3 file descriptor for use in the following loop.
+
+	if [[ -f "$destList" ]]; then 
+		exec 3<"$destList"
+	else 
+		exec 3<<<"$destList"
+	fi
+
+	declare -a siteParams
+
+	while IFS=, read -ra siteParams; do
+		if [[ ${#siteParams[@]} -ne 0 ]]; then
+			fireOn
+		fi
+	done <&3
+	echo "Finish!"
+}
+
+# Fire on!!
+fireOn()
+{
+	unset site{Path,Hostname,Port,Name}
+
+	for siteVar in "${siteParams[@]}"; do
+
+		case "$siteVar" in
+			:*)
+				if [[ -n "$sitePath" ]]; then
+					show_help 11 "Check your destination list"
+				else
+					sitePath="${siteVar#:}"
+				fi
+				;;
+			*@*)
+				if [[ -n "$siteHostname" ]]; then 
+					show_help 11 "Check your destination list"
+				else
+					if [[ "$siteVar" == @* ]]; then
+						siteHostname="${siteVar#@}"
+					else
+						siteHostname="$siteVar"
+					fi
+				fi
+				;;
+			-p*)
+				if [[ -n "$sitePort" ]]; then 
+					show_help 11 "Check your destination list"
+				else
+					sitePort="-p ${siteVar#-p}"
+					siteRsyncPort="-e 'ssh -p ${siteVar#-p}'"
+				fi
+				;;
+			-r*)
+				if [[ -n "$siteRsyncOptions" ]]; then
+					show_help 11 "Check your destination list"
+				else
+					siteRsyncOptions="${siteVar#-r}"
+				fi
+				;;
+			*)
+				if [[ -n "$siteName" ]]; then
+					show_help 11 "Check your destination list"
+				else
+					siteName="$siteVar"
+				fi
+				;;
+		esac
+
+	done
+
+	if [[ -z "siteHostname" ]] && [[ -z "siteName" ]]; then
+		show_help 12 "No valid name was specified"
+	fi
+
+	if [[ -z "$siteHostname" ]]; then
+		siteHostname="$siteName"
+	fi
+
+	if [[ -z "$siteName" ]]; then
+		siteName="$siteHostname"
+	fi
+
+	if [[ -z "$sitePort" ]] && [[ -n "$defaultPort" ]]; then
+		sitePort="-p $defaultPort"
+		siteRsyncPort="-e 'ssh -p $defaultPort'"
+	fi
+
+	if [[ -z "$siteRsyncOptions" ]]; then
+		siteRsyncOptions="$defaultRsyncOptions"
+	fi
+
+	if [[ -z "$sitePath" ]]; then
+		sitePath="$defaultPath"
+	fi
+
+	# Check if source name or exec command specified
+	if [ -z "$sourceName" ] && [ -z "$execCmd" ]; then
+		show_help 2 "No source name or execute command was specified"
+	fi
+#
+#	echo
+#	echo "1: $1"
+#	echo "siteVar: $siteVar"
+#	echo "sitePath: $sitePath"
+#	echo "siteHostname: $siteHostname"
+#	echo "sitePort: $sitePort"
+#	echo "siteName: $siteName"
+#	echo "sourceName: $sourceName"
+#	echo "sourceFileList: $sourceFileList"
+#	echo "destList: $destList"
+#	echo "destName: $destName"
+#	echo "execCmd: $execCmd"
+#	echo "defaultPath: $defaultPath"
+#	echo "defaultPort: $defaultPort"
+#	echo 
+#
+	echo "_____________________________________________"
+	echo "$siteName"
+	echo "_____________________________________________"
+
+	if [ -n "$sourceName" ]; then
+		if [ -d "$sourceName" ]; then
+
+			echo "Copying with rsync the directory \"$sourceName\" to $siteName in \"$sitePath\":"
+			rsync $siteRsyncOptions $siteRsyncPort --progress "$sourceName" "$siteHostname:$sitePath" || exit $?
+
+		elif [ -f "$sourceName" ]; then
+			echo "Copying with rsync the file \"$sourceName\" to $siteName in \"$sitePath\":"
+			rsync $siteRsyncOptions $siteRsyncPort --progress "$sourceName" "$siteHostname:$sitePath" || exit $?
+
+		else
+			show_help 3 "No source found. Check your source path."
+		fi
+	fi
+
+	# Check if execute command is specified, and run ssh accordingly.
+	if [ -n "$execCmd" ]; then
+		echo "Execute remote command $execCmd"
+		ssh -n "$siteHostname" "$sitePort" "sitePath=\"$sitePath\"; sourceName=\"$sourceName\"; siteName=\"$siteName\"; $execCmd"
+	fi
+
+}
+
+
+while :
+do
+	case $1 in
+		-h | --help | -\?)
+			#  Call your show_help() or usage() function here.
+			show_help 0
+			;;
+
+		-e | --exec)
+			execCmd="$2"
+			shift 2
+			;;
+		--exec=*)
+			execCmd="${1#*=}"
+			shift
+			;;
+		-e*)
+			execCmd="${1#-e}"
+			shift
+			;;
+
+		-p | --port)
+			defaultPort="$2"
+			shift 2
+			;;
+		--port=*)
+			defaultPort="${1#*=}"
+			shift
+			;;
+		-p*)
+			defaultPort="${1#-p}"
+			shift
+			;;
+
+		-r | --rsync-options)
+			defaultRsyncOptions="$2"
+			shift 2
+			;;
+		--rsync-options=*)
+			defaultRsyncOptions="${1#*=}"
+			shift
+			;;
+		-r*)
+			defaultRsyncOptions="${1#-r}"
+			shift
+			;;
+
+		*.fl)
+			sourceFileList="$1"
+			shift
+			;;
+
+		--) # End of all options
+			shift
+			break
+			;;
+		-*)
+			show_help 4 "WARN: Unknown option: $1"
+			shift
+			;;
+		*)  # no more options. Stop while loop
+			break
+			;;
+	esac
+done
+
+# There cannot be more than 2 arguments
+if [[ -n "$3" ]]; then
+	show_help 7 "Arguments specified incorrectly"
+
+# If 2 arguments specified
+elif [[ -n "$2" ]]; then
+	sourceName="$1"
+	check_dest "$2"
+	loop_dest
+
+# Else If only 1 argument specified
+elif [[ -n "$1" ]]; then
+	check_dest "$1"
+	loop_dest
+
+# There must be at least 1 argument (not option)
+else
+	show_help 7 "Arguments specified incorrectly"
+fi
+
+
