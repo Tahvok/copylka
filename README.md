@@ -1,2 +1,2 @@
 # copylka
-Upload file(s) to remote host(s) and execute a command
+Upload file(s) to remote host(s) (using rsync) and execute a command (using ssh).
